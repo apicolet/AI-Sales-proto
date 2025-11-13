@@ -68,7 +68,7 @@ setup(
     ],
     package_data={
         "brevo_sales": [
-            "enrichment/schema.sql",
+            "cache/schema.sql",
             "summarization/prompts/*.md",
             "recommendations/prompts/*.md",
         ],
