@@ -12,12 +12,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.json import JSON
 from rich.progress import Progress, SpinnerColumn, TextColumn
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
-
-from brevo_data_gatherer.config import load_config
+# Load environment variables from multiple locations
+from brevo_data_gatherer.config import load_config, load_env_from_multiple_locations
+load_env_from_multiple_locations()
 from brevo_data_gatherer.cache.manager import CacheManager
 from brevo_data_gatherer.core.brevo_client import BrevoClient
 from brevo_data_gatherer.core.linkedin_client import LinkedInClient

@@ -12,10 +12,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.markdown import Markdown
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from multiple locations
+from generate_deal_summary.config import load_env_from_multiple_locations
+load_env_from_multiple_locations()
 
 from generate_deal_summary.core import AIClient, DealSummarizer
 from generate_deal_summary.utils.prompt_loader import PromptLoader

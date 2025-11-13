@@ -9,12 +9,10 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 import logging
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
-
-from sales_engagement_action.config import load_config, DEFAULT_CACHE_DIR, DEFAULT_COMPANY_CONTEXT
+# Load environment variables from multiple locations
+from sales_engagement_action.config import load_config, load_env_from_multiple_locations, DEFAULT_CACHE_DIR, DEFAULT_COMPANY_CONTEXT
+load_env_from_multiple_locations()
 from sales_engagement_action.cache.manager import RecommendationCache
 from sales_engagement_action.core.recommender import ActionRecommender
 from sales_engagement_action.core.feedback_processor import FeedbackProcessor
