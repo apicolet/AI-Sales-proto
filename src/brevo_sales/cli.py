@@ -406,7 +406,17 @@ def recommend(
         table.add_column("Value", style="green")
 
         table.add_row("Deal", result.deal_name or deal_id)
-        table.add_row("Contact", result.primary_contact or "N/A")
+
+        # Format contact info
+        contact_info = "N/A"
+        if result.contact_name and result.contact_email:
+            contact_info = f"{result.contact_name} ({result.contact_email})"
+        elif result.contact_name:
+            contact_info = result.contact_name
+        elif result.contact_email:
+            contact_info = result.contact_email
+
+        table.add_row("Contact", contact_info)
         table.add_row("P0 Actions", str(len(result.p0_actions)))
         table.add_row("P1 Actions", str(len(result.p1_actions)))
         table.add_row("P2 Actions", str(len(result.p2_actions)))
