@@ -63,7 +63,7 @@ class ActionRecommender:
             self.prompt_template = prompt_template
             self.prompt_metadata = {}
         else:
-            prompt_path = Path(__file__).parent.parent / "prompts" / "recommend.md"
+            prompt_path = Path(__file__).parent / "prompts" / "recommend.md"
             self.prompt_metadata, self.prompt_template = PromptLoader.load_prompt_file_with_metadata(prompt_path)
 
         # Initialize AI client with settings from prompt metadata
