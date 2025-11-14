@@ -613,6 +613,132 @@ Version: 1.0
         sys.exit(1)
 
 
+@app.command()
+def update_cookie(
+    curl_command: str = typer.Argument(
+        ...,
+        help="Full cURL command containing cookie (paste entire command from Chrome DevTools)"
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose", "-v",
+        help="Enable verbose logging"
+    ),
+):
+    """
+    Update BREVO_COOKIE from a cURL command.
+
+    Extracts the cookie from -b or --cookie parameter and updates
+    the ~/.ai-sales/.env file. Useful when your Brevo session expires.
+
+    Example:
+        brevo-sales update-cookie "curl -b 'session=abc; token=xyz' https://..."
+    """
+    setup_logging(verbose)
+
+    try:
+        import re
+
+        # Extract cookie from cURL command
+        # Match -b or --cookie followed by quoted or unquoted value
+        pattern = r"(?:-b|--cookie)\s+(?:'([^']*)'|\"([^\"]*)\"|(\S+))"
+        match = re.search(pattern, curl_command, re.DOTALL)
+
+        if not match:
+            console.print("[red]Error:[/red] Could not find -b or --cookie parameter in cURL command")
+            console.print("\n[dim]Expected format:[/dim]")
+            console.print("  curl -b 'cookie_string' ...")
+            console.print("  curl --cookie 'cookie_string' ...")
+            sys.exit(1)
+
+        # Extract cookie value (from whichever group matched)
+        cookie_value = match.group(1) or match.group(2) or match.group(3)
+        cookie_value = cookie_value.strip()
+
+        if not cookie_value:
+            console.print("[red]Error:[/red] Cookie value is empty")
+            sys.exit(1)
+
+        # Validate cookie format (should have at least one =)
+        if '=' not in cookie_value:
+            console.print("[red]Error:[/red] Invalid cookie format (no key=value pairs found)")
+            sys.exit(1)
+
+        # Count cookie pairs
+        cookie_pairs = [p.strip() for p in cookie_value.split(';') if '=' in p]
+
+        if verbose:
+            console.print(f"[dim]Found {len(cookie_pairs)} cookie pairs[/dim]")
+
+        # Update .env file
+        env_path = Path.home() / ".ai-sales" / ".env"
+
+        if not env_path.exists():
+            console.print(f"[yellow]Warning:[/yellow] {env_path} does not exist, creating it...")
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            env_path.write_text("")
+
+        # Read current content
+        lines = env_path.read_text().splitlines()
+
+        # Find and update BREVO_COOKIE line
+        updated = False
+        new_lines = []
+        for line in lines:
+            if line.startswith("BREVO_COOKIE="):
+                new_lines.append(f"BREVO_COOKIE={cookie_value}")
+                updated = True
+                if verbose:
+                    console.print(f"[dim]Updated existing BREVO_COOKIE line[/dim]")
+            else:
+                new_lines.append(line)
+
+        # If not found, add it after the cookie comment if exists, or at the end
+        if not updated:
+            # Try to find the cookie comment line
+            inserted = False
+            for i, line in enumerate(new_lines):
+                if "Brevo Cookie" in line and line.startswith("#"):
+                    new_lines.insert(i + 1, f"BREVO_COOKIE={cookie_value}")
+                    inserted = True
+                    if verbose:
+                        console.print(f"[dim]Added BREVO_COOKIE after comment line[/dim]")
+                    break
+
+            # If still not found, append at the end
+            if not inserted:
+                if new_lines and new_lines[-1] != "":
+                    new_lines.append("")
+                new_lines.append("# Brevo Cookie (for Email Conversations - expires periodically)")
+                new_lines.append(f"BREVO_COOKIE={cookie_value}")
+                if verbose:
+                    console.print(f"[dim]Added BREVO_COOKIE at end of file[/dim]")
+
+        # Write back
+        env_path.write_text("\n".join(new_lines) + "\n")
+
+        # Success message
+        console.print(f"[green]✓[/green] Cookie updated successfully in {env_path}")
+        console.print(f"\n[bold]Cookie Summary:[/bold]")
+        console.print(f"  Cookie pairs: {len(cookie_pairs)}")
+
+        if cookie_pairs:
+            first_cookie = cookie_pairs[0].split('=')[0]
+            last_cookie = cookie_pairs[-1].split('=')[0]
+            console.print(f"  First cookie: {first_cookie}")
+            console.print(f"  Last cookie: {last_cookie}")
+
+        console.print(f"\n[dim]The cookie will be used for Conversations API authentication.[/dim]")
+        console.print(f"[dim]You can now run enrichment commands that use the Conversations API.[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}", style="bold red")
+        if verbose:
+            import traceback
+            console.print(traceback.format_exc())
+        sys.exit(1)
+
+
 def main():
     """Main entry point for CLI."""
     app()
