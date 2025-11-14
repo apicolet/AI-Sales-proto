@@ -116,11 +116,12 @@ class PromptLoader:
         """
         Extract the System Prompt section from markdown content.
 
-        Looks for content between ## System Prompt and the next ## header.
+        Looks for content between ## System Prompt and the next ## header (not ###).
         """
         # Find the System Prompt section
+        # Use negative lookahead to ensure we only match ## (not ###, ####, etc.)
         match = re.search(
-            r'##\s+System Prompt\s*\n(.*?)(?=\n##|\Z)',
+            r'##\s+System Prompt\s*\n(.*?)(?=\n##(?!#)|\Z)',
             content,
             re.DOTALL | re.IGNORECASE
         )

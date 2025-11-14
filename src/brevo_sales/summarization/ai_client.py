@@ -38,7 +38,7 @@ class AIClient:
         self,
         system_prompt: str,
         user_prompt: str,
-        response_format: Optional[type[BaseModel]] = None
+        response_format: Optional[type[BaseModel] | Dict[str, str]] = None
     ) -> Dict[str, Any]:
         """
         Generate completion from Claude.
@@ -46,7 +46,8 @@ class AIClient:
         Args:
             system_prompt: System instructions
             user_prompt: User message/prompt
-            response_format: Optional Pydantic model for structured output
+            response_format: Optional Pydantic model for structured output,
+                           or dict like {"type": "json_object"} for Claude JSON mode
 
         Returns:
             Dict containing the response
@@ -79,6 +80,13 @@ class AIClient:
 
             # Parse response if format specified
             if response_format:
+                # Handle dict format (e.g., {"type": "json_object"})
+                if isinstance(response_format, dict):
+                    # Just return raw response for JSON mode
+                    # Parser will handle the three-tier strategy
+                    return {"response": response_text}
+
+                # Handle Pydantic model format
                 try:
                     # Try to extract JSON from response
                     # Look for JSON in markdown code blocks or raw JSON

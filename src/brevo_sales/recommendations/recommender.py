@@ -23,6 +23,9 @@ from brevo_sales.recommendations.cache import RecommendationCache
 from brevo_sales.recommendations.models import RecommendationResult
 from brevo_sales.recommendations.context_loader import CompanyContextLoader
 from brevo_sales.recommendations.prompt_loader import PromptLoader
+from brevo_sales.recommendations.action_models import ActionRecommendations
+from brevo_sales.recommendations.parser import ActionParser, ParseResult
+from typing import Union
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +46,8 @@ class ActionRecommender:
         anthropic_api_key: str,
         brevo_api_key: str,
         cache: Optional[RecommendationCache] = None,
-        prompt_template: Optional[str] = None
+        prompt_template: Optional[str] = None,
+        use_structured_output: bool = False
     ):
         """
         Initialize recommender.
@@ -53,17 +57,27 @@ class ActionRecommender:
             brevo_api_key: Brevo API key for enrichment
             cache: Optional cache manager
             prompt_template: Optional custom prompt template
+            use_structured_output: If True, use structured JSON output (ActionRecommendations model)
+                                    If False, use legacy markdown output (RecommendationResult model)
         """
         self.anthropic_api_key = anthropic_api_key
         self.brevo_api_key = brevo_api_key
         self.cache = cache
+        self.use_structured_output = use_structured_output
 
         # Load prompt and metadata
         if prompt_template:
             self.prompt_template = prompt_template
             self.prompt_metadata = {}
         else:
-            prompt_path = Path(__file__).parent / "prompts" / "recommend.md"
+            # Choose prompt based on output mode
+            if use_structured_output:
+                prompt_path = Path(__file__).parent / "prompts" / "recommend_structured.md"
+                logger.info("Using structured output mode with ActionRecommendations model")
+            else:
+                prompt_path = Path(__file__).parent / "prompts" / "recommend.md"
+                logger.info("Using legacy output mode with RecommendationResult model")
+
             self.prompt_metadata, self.prompt_template = PromptLoader.load_prompt_file_with_metadata(prompt_path)
 
         # Initialize AI client with settings from prompt metadata
@@ -78,14 +92,18 @@ class ActionRecommender:
             max_tokens=max_tokens
         )
 
-        logger.info(f"Initialized recommender with model={model}, temp={temperature}, max_tokens={max_tokens}")
+        # Initialize parser for structured output
+        if use_structured_output:
+            self.parser = ActionParser()
+
+        logger.info(f"Initialized recommender with model={model}, temp={temperature}, max_tokens={max_tokens}, structured={use_structured_output}")
 
     def recommend(
         self,
         deal_id: str,
         campaign_context: Optional[str] = None,
         force_refresh: bool = False
-    ) -> RecommendationResult:
+    ) -> Union[RecommendationResult, ActionRecommendations]:
         """
         Generate recommendations for a deal.
 
@@ -95,9 +113,24 @@ class ActionRecommender:
             force_refresh: Force regeneration even if cache is fresh
 
         Returns:
-            RecommendationResult with prioritized actions
+            RecommendationResult (legacy mode) or ActionRecommendations (structured mode)
         """
         logger.info(f"Starting recommendation generation for deal {deal_id}")
+
+        # Branch based on output mode
+        if self.use_structured_output:
+            return self._recommend_structured(deal_id, campaign_context, force_refresh)
+        else:
+            return self._recommend_legacy(deal_id, campaign_context, force_refresh)
+
+    def _recommend_legacy(
+        self,
+        deal_id: str,
+        campaign_context: Optional[str] = None,
+        force_refresh: bool = False
+    ) -> RecommendationResult:
+        """Legacy recommendation flow (markdown output)."""
+        logger.info(f"Using legacy recommendation flow for deal {deal_id}")
 
         # Step 1: Load company context
         context_data = CompanyContextLoader.load_context()
@@ -413,3 +446,112 @@ class ActionRecommender:
         )
 
         return result
+
+    def _recommend_structured(
+        self,
+        deal_id: str,
+        campaign_context: Optional[str] = None,
+        force_refresh: bool = False
+    ) -> ActionRecommendations:
+        """
+        Structured recommendation flow (JSON output with ActionRecommendations model).
+        
+        Uses the structured prompt and parser to generate executable actions.
+        """
+        logger.info(f"Using structured recommendation flow for deal {deal_id}")
+
+        # Step 1: Load company context
+        context_data = CompanyContextLoader.load_context()
+        company_context = context_data["content"]
+        logger.info(f"Loaded company context (version {context_data['version']})")
+
+        # Step 2: Get enriched data from Script 1
+        enriched_data = self._ensure_enriched_data(deal_id)
+        logger.info("Enriched data loaded")
+
+        # Step 3: Get summary from Script 2 (optional but recommended)
+        summary = None
+        try:
+            summary = self._ensure_summary(enriched_data)
+            logger.info("Summary loaded")
+        except Exception as e:
+            logger.warning(f"Could not generate summary: {e}")
+
+        # Step 4: Compute data version hash
+        import hashlib
+        data_version = hashlib.sha256(json.dumps(enriched_data, sort_keys=True).encode()).hexdigest()[:16]
+
+        # Step 5: Check cache
+        # summary parameter expects hash string (data_version), not full dict
+        summary_hash = summary.get("data_version") if summary else None
+
+        if self.cache and not force_refresh:
+            cache_result = self.cache.get_cached_recommendation(
+                deal_id=deal_id,
+                enriched_data=enriched_data,
+                summary=summary_hash,
+                prompt_template=self.prompt_template,
+                company_context=company_context,
+                campaign_context=campaign_context
+            )
+
+            if cache_result:
+                cached_rec, is_fresh, prev_enriched = cache_result
+                if is_fresh:
+                    logger.info("Using fresh cached recommendation")
+                    result = ActionRecommendations(**cached_rec)
+                    result.is_cached = True
+                    return result
+                else:
+                    logger.info("Cache found but stale, will regenerate")
+
+        # Step 6: Build prompt with all context
+        system_prompt = self._build_system_prompt(company_context)
+        user_prompt = self._build_user_prompt(
+            enriched_data=enriched_data,
+            summary=summary,
+            campaign_context=campaign_context
+        )
+
+        # Step 7: Generate recommendations using Claude with JSON mode
+        logger.info("Calling Claude API for structured recommendations (JSON mode)")
+        response = self.ai_client.generate_completion(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_format={"type": "json_object"}  # Enable JSON mode
+        )
+
+        response_text = response.get("response", "")
+        logger.info(f"Generated structured response ({len(response_text)} chars)")
+
+        # Step 8: Parse using three-tier parser
+        parse_result = self.parser.parse(response_text, deal_id, data_version)
+
+        if not parse_result.success:
+            error_msg = f"Failed to parse structured response: {parse_result.error}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        logger.info(f"Successfully parsed recommendations using tier {parse_result.tier_used}")
+
+        # Step 9: Validate completeness
+        warnings = self.parser.validate_action_completeness(parse_result.data)
+        if warnings:
+            logger.warning(f"Action completeness warnings: {len(warnings)}")
+            for warning in warnings[:5]:  # Log first 5
+                logger.warning(f"  - {warning}")
+
+        # Step 10: Save to cache
+        if self.cache:
+            self.cache.save_recommendation(
+                deal_id=deal_id,
+                enriched_data=enriched_data,
+                summary=summary_hash,
+                prompt_template=self.prompt_template,
+                company_context=company_context,
+                campaign_context=campaign_context,
+                recommendation=parse_result.data.model_dump(mode='json')
+            )
+            logger.info("Saved recommendation to cache")
+
+        return parse_result.data

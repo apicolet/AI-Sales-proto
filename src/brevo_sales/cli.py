@@ -330,6 +330,16 @@ def recommend(
         "--markdown", "-m",
         help="Output file for markdown strategy"
     ),
+    structured: bool = typer.Option(
+        False,
+        "--structured",
+        help="Use structured output (executable actions with strict schemas)"
+    ),
+    format: str = typer.Option(
+        "card",
+        "--format", "-f",
+        help="Display format: card (default), json, markdown, all"
+    ),
     force_refresh: bool = typer.Option(
         False,
         "--force-refresh",
@@ -349,14 +359,29 @@ def recommend(
     - P1 actions (this week) with strategic outlines
     - P2 actions (next week) with brief outlines
 
-    Example:
+    Output Modes:
+    - Legacy (default): Markdown-based recommendations
+    - Structured (--structured): JSON with executable actions (email, phone, LinkedIn, WhatsApp)
+
+    Display Formats (for structured mode):
+    - card: Rich terminal display with colors (default)
+    - json: Machine-readable JSON
+    - markdown: Human-readable markdown
+    - all: Show all formats
+
+    Examples:
         brevo-sales recommend 690daec017db693613964d23
-        brevo-sales recommend 690daec017db693613964d23 -c "Q4 product launch" -o results.json
+        brevo-sales recommend 690daec017db693613964d23 --structured
+        brevo-sales recommend 690daec017db693613964d23 --structured -f json -o results.json
+        brevo-sales recommend 690daec017db693613964d23 -c "Q4 product launch"
     """
     setup_logging(verbose)
 
     try:
         from brevo_sales.recommendations.recommender import ActionRecommender
+        from brevo_sales.recommendations.action_models import ActionRecommendations
+        from brevo_sales.recommendations.parser import ActionParser
+        import brevo_sales.cli_display as display
 
         # Load configuration
         config = load_config()
@@ -367,10 +392,19 @@ def recommend(
             console.print("[red]Error:[/red] BREVO_API_KEY not found in environment")
             sys.exit(1)
 
-        # Create recommender
+        # Initialize cache
+        from brevo_sales.recommendations.cache import RecommendationCache
+        from brevo_sales.config import DEFAULT_CACHE_DIR
+        cache_file = DEFAULT_CACHE_DIR / "recommendations" / "cache.db"
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache = RecommendationCache(cache_file)
+
+        # Create recommender with appropriate mode
         recommender = ActionRecommender(
             anthropic_api_key=config.anthropic_api_key,
-            brevo_api_key=config.brevo.api_key
+            brevo_api_key=config.brevo.api_key,
+            cache=cache,
+            use_structured_output=structured
         )
 
         # Generate recommendations with progress
@@ -379,7 +413,8 @@ def recommend(
             TextColumn("[progress.description]{task.description}"),
             console=console
         ) as progress:
-            task = progress.add_task("Generating recommendations...", total=None)
+            task_desc = "Generating structured recommendations..." if structured else "Generating recommendations..."
+            task = progress.add_task(task_desc, total=None)
             result = recommender.recommend(
                 deal_id=deal_id,
                 campaign_context=campaign_context,
@@ -387,44 +422,87 @@ def recommend(
             )
             progress.update(task, completed=True)
 
-        # Output JSON
-        if output:
-            with open(output, 'w') as f:
-                json.dump(result.dict(), f, indent=2, default=str)
-            console.print(f"[green]✓[/green] Recommendations saved to: {output}")
+        # Handle structured output
+        if structured and isinstance(result, ActionRecommendations):
+            # Validate completeness
+            parser = ActionParser()
+            warnings = parser.validate_action_completeness(result)
 
-        # Output Markdown
-        if markdown:
-            md_content = result.to_markdown()
-            with open(markdown, 'w') as f:
-                f.write(md_content)
-            console.print(f"[green]✓[/green] Strategy saved to: {markdown}")
+            # Output to file if requested
+            if output:
+                json_output = display.format_json(result)
+                with open(output, 'w') as f:
+                    f.write(json_output)
+                console.print(f"[green]✓[/green] JSON saved to: {output}")
 
-        # Print summary to console
-        table = Table(title="Recommendation Overview")
-        table.add_column("Metric", style="cyan")
-        table.add_column("Value", style="green")
+            if markdown:
+                md_output = display.format_markdown(result)
+                with open(markdown, 'w') as f:
+                    f.write(md_output)
+                console.print(f"[green]✓[/green] Markdown saved to: {markdown}")
 
-        table.add_row("Deal", result.deal_name or deal_id)
+            # Display to console based on format
+            if not output or format != "json":  # Show display unless only JSON output
+                if format in ("card", "all"):
+                    display.format_card(result)
 
-        # Format contact info
-        contact_info = "N/A"
-        if result.contact_name and result.contact_email:
-            contact_info = f"{result.contact_name} ({result.contact_email})"
-        elif result.contact_name:
-            contact_info = result.contact_name
-        elif result.contact_email:
-            contact_info = result.contact_email
+                if format == "json" or format == "all":
+                    if format == "all":
+                        console.print("\n[bold]JSON Output:[/bold]\n")
+                    json_output = display.format_json(result)
+                    console.print(json_output)
 
-        table.add_row("Contact", contact_info)
-        table.add_row("P0 Actions", str(len(result.p0_actions)))
-        table.add_row("P1 Actions", str(len(result.p1_actions)))
-        table.add_row("P2 Actions", str(len(result.p2_actions)))
+                if format == "markdown" or format == "all":
+                    if format == "all":
+                        console.print("\n[bold]Markdown Output:[/bold]\n")
+                    md_output = display.format_markdown(result)
+                    console.print(md_output)
 
-        console.print(table)
+            # Show validation warnings
+            if warnings:
+                display.display_validation_warnings(warnings)
 
-        if not output and not markdown:
-            console.print("\n[dim]Use -o/--output for JSON or -m/--markdown for full report[/dim]")
+        # Handle legacy output
+        else:
+            # Output JSON
+            if output:
+                with open(output, 'w') as f:
+                    json.dump(result.dict(), f, indent=2, default=str)
+                console.print(f"[green]✓[/green] Recommendations saved to: {output}")
+
+            # Output Markdown
+            if markdown:
+                md_content = result.to_markdown()
+                with open(markdown, 'w') as f:
+                    f.write(md_content)
+                console.print(f"[green]✓[/green] Strategy saved to: {markdown}")
+
+            # Print summary to console
+            table = Table(title="Recommendation Overview")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", style="green")
+
+            table.add_row("Deal", result.deal_name or deal_id)
+
+            # Format contact info
+            contact_info = "N/A"
+            if result.contact_name and result.contact_email:
+                contact_info = f"{result.contact_name} ({result.contact_email})"
+            elif result.contact_name:
+                contact_info = result.contact_name
+            elif result.contact_email:
+                contact_info = result.contact_email
+
+            table.add_row("Contact", contact_info)
+            table.add_row("P0 Actions", str(len(result.p0_actions)))
+            table.add_row("P1 Actions", str(len(result.p1_actions)))
+            table.add_row("P2 Actions", str(len(result.p2_actions)))
+
+            console.print(table)
+
+            if not output and not markdown:
+                console.print("\n[dim]Use -o/--output for JSON or -m/--markdown for full report[/dim]")
+                console.print("[dim]Tip: Use --structured for executable actions with full content[/dim]")
 
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}", style="bold red")
