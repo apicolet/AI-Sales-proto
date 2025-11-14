@@ -101,9 +101,9 @@ class PromptLoader:
     @staticmethod
     def get_default_prompt_path() -> Path:
         """Get the path to the default prompt file."""
-        # Get the package directory
-        package_dir = Path(__file__).parent.parent
-        return package_dir / "prompts" / "default.md"
+        # Get the summarization module directory
+        module_dir = Path(__file__).parent
+        return module_dir / "prompts" / "default.md"
 
     @staticmethod
     def load_default_prompt() -> str:

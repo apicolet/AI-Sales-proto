@@ -37,6 +37,62 @@ def setup_logging(verbose: bool = False):
     )
 
 
+def _create_enricher(config, no_linkedin: bool = False, no_web_search: bool = False):
+    """
+    Create and configure a DataEnricher with all necessary clients.
+
+    This is a shared helper to avoid code duplication between enrich and summarize commands.
+
+    Args:
+        config: Configuration object
+        no_linkedin: Disable LinkedIn enrichment
+        no_web_search: Disable web search enrichment
+
+    Returns:
+        Configured DataEnricher instance
+    """
+    from brevo_sales.enrichment.enricher import DataEnricher
+    from brevo_sales.enrichment.brevo_client import BrevoClient
+    from brevo_sales.enrichment.linkedin_client import LinkedInClient
+    from brevo_sales.enrichment.web_client import WebSearchClient
+    from brevo_sales.cache.manager import CacheManager
+
+    # Initialize cache
+    cache_manager = CacheManager(config.cache_dir / "enrichment.db")
+
+    # Initialize Brevo client
+    brevo_client = BrevoClient(
+        api_key=config.brevo.api_key,
+        base_url=config.brevo.base_url,
+        cache_manager=cache_manager
+    )
+
+    # Initialize optional clients
+    linkedin_client = None
+    if not no_linkedin and config.linkedin.pipedream_workflow_url:
+        linkedin_client = LinkedInClient(
+            provider=config.linkedin.provider,
+            cache_manager=cache_manager,
+            pipedream_workflow_url=config.linkedin.pipedream_workflow_url
+        )
+
+    web_client = None
+    if not no_web_search and config.web_search.api_key:
+        web_client = WebSearchClient(
+            provider=config.web_search.provider,
+            cache_manager=cache_manager,
+            api_key=config.web_search.api_key
+        )
+
+    # Create and return enricher
+    return DataEnricher(
+        brevo_client=brevo_client,
+        linkedin_client=linkedin_client,
+        web_client=web_client,
+        cache_manager=cache_manager
+    )
+
+
 @app.command()
 def enrich(
     entity_identifier: str = typer.Argument(
@@ -84,49 +140,11 @@ def enrich(
     setup_logging(verbose)
 
     try:
-        from brevo_sales.enrichment.enricher import DataEnricher
-        from brevo_sales.enrichment.brevo_client import BrevoClient
-        from brevo_sales.enrichment.linkedin_client import LinkedInClient
-        from brevo_sales.enrichment.web_client import WebSearchClient
-        from brevo_sales.cache.manager import CacheManager
-
         # Load configuration
         config = load_config()
 
-        # Initialize cache
-        cache_manager = CacheManager(config.cache_dir / "enrichment.db")
-
-        # Initialize Brevo client
-        brevo_client = BrevoClient(
-            api_key=config.brevo.api_key,
-            base_url=config.brevo.base_url,
-            cache_manager=cache_manager
-        )
-
-        # Initialize optional clients
-        linkedin_client = None
-        if not no_linkedin and config.linkedin.pipedream_workflow_url:
-            linkedin_client = LinkedInClient(
-                provider=config.linkedin.provider,
-                cache_manager=cache_manager,
-                pipedream_workflow_url=config.linkedin.pipedream_workflow_url
-            )
-
-        web_client = None
-        if not no_web_search and config.web_search.api_key:
-            web_client = WebSearchClient(
-                provider=config.web_search.provider,
-                cache_manager=cache_manager,
-                api_key=config.web_search.api_key
-            )
-
-        # Create enricher
-        enricher = DataEnricher(
-            brevo_client=brevo_client,
-            linkedin_client=linkedin_client,
-            web_client=web_client,
-            cache_manager=cache_manager
-        )
+        # Create enricher using shared helper
+        enricher = _create_enricher(config, no_linkedin, no_web_search)
 
         # Enrich with progress indicator
         with Progress(
@@ -233,10 +251,28 @@ def summarize(
                 enriched_data = json.load(f)
         else:
             # Run enrichment first
-            console.print("No input file provided, enriching deal data first...")
-            # TODO: Call enrich internally
-            console.print("[red]Error:[/red] Direct deal enrichment not yet implemented. Use --input with enriched data file.")
-            sys.exit(1)
+            console.print(f"Enriching deal {deal_id} first...")
+
+            # Validate API key
+            if not config.brevo.api_key:
+                console.print("[red]Error:[/red] BREVO_API_KEY not found in environment")
+                sys.exit(1)
+
+            # Create enricher using shared helper
+            enricher = _create_enricher(config)
+
+            # Enrich with progress indicator
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console
+            ) as progress:
+                task = progress.add_task("Enriching CRM data...", total=None)
+                enriched_data_obj = enricher.enrich(deal_id, "deal")
+                progress.update(task, completed=True)
+
+            # Convert to dict for summarizer (using mode='json' to handle datetime serialization)
+            enriched_data = enriched_data_obj.model_dump(mode='json')
 
         # Initialize AI client and summarizer
         ai_client = AIClient(api_key=config.anthropic_api_key, model=model)
@@ -260,14 +296,13 @@ def summarize(
 
         # Output Markdown
         if markdown:
-            md_content = summary.to_markdown()
             with open(markdown, 'w') as f:
-                f.write(md_content)
+                f.write(summary.executive_summary)
             console.print(f"[green]✓[/green] Markdown report saved to: {markdown}")
 
         # Print to console if no output files
         if not output and not markdown:
-            console.print(Markdown(summary.to_markdown()))
+            console.print(Markdown(summary.executive_summary))
 
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}", style="bold red")
